@@ -3,3 +3,6 @@ __pycache__/
 .env
 token.json
 credentials.json
+*.pyc
+token.json
+credentials.json

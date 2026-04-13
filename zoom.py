@@ -13,8 +13,10 @@ import requests
 from datetime import datetime
 from dotenv import load_dotenv
 from crewai import Agent, Task, Crew, Process
-from langchain_google_genai import ChatGoogleGenerativeAI #Python code talk to Google’s AI model
+ #Python code talk to Google’s AI model
 from gmail import send_email_notification
+from crewai import Agent
+from crewai import LLM
 
 # Load environment variables
 load_dotenv()
@@ -38,7 +40,11 @@ os.environ["NOTION_API_KEY"] = NOTION_API_KEY
 #Some libraries don’t read your Python variables. They ONLY read from os.environ like langchain
 
 # Initialize the Google Generative AI model
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.7)
+llm = LLM(
+    model="gpt-4o-mini",
+    api_key=os.getenv("OPENAI_API_KEY"),
+    temperature=0.7
+)
 #Gemini 1.5 Pro because it handles long-context inputs like lecture transcripts very well.
 
 #model: Specifies which version of the Google Generative AI model to use. "gemini-1.5-pro" is a specific model variant that 
@@ -177,14 +183,21 @@ def main():
     transcript_data = fetch_transcript()
 
     # Convert API response to text
-    if isinstance(transcript_data, dict) and "transcript" in transcript_data: #Did API return valid data? does key transcript and is it a dict?
-        transcript_entries = transcript_data.get("transcript", []) #Gets list of transcript chunks
-        transcript_text = "\n\n".join( #Converts structured data → readable text
-            f"{entry.get('speaker', 'Unknown')}: {entry.get('text', '')}" #formats each chunk as "Speaker: Text"
-            for entry in transcript_entries
+    # if isinstance(transcript_data, dict) and "transcript" in transcript_data: #Did API return valid data? does key transcript and is it a dict?
+    #     transcript_entries = transcript_data.get("transcript", []) #Gets list of transcript chunks
+    #     transcript_text = "\n\n".join( #Converts structured data → readable text
+    #         f"{entry.get('speaker', 'Unknown')}: {entry.get('text', '')}" #formats each chunk as "Speaker: Text"
+    #         for entry in transcript_entries
+    #     )
+    # else:
+    #     transcript_text = str(transcript_data) #If the API response is NOT in the expected format, convert whatever we got into a string.
+    if isinstance(transcript_data, list):
+        transcript_text = "\n\n".join(
+            f"{entry.get('speaker_name', 'Unknown')}: {entry.get('transcription', {}).get('transcript', '')}"
+            for entry in transcript_data
         )
     else:
-        transcript_text = str(transcript_data) #If the API response is NOT in the expected format, convert whatever we got into a string.
+        transcript_text = str(transcript_data)
 
     # Trim transcript (for now)
     trimmed_transcript = get_first_n_words(transcript_text, 100)#Keeps only first 100 words (helps avoid token limits)
@@ -205,7 +218,19 @@ def main():
     Return ONLY:
 
     SUMMARY:
-    <3–5 paragraph summary>
+    - Write a clear and simple explanation of the lecture
+
+    IMPORTANT QUOTES:
+    - Extract exact sentences from the transcript (do NOT rephrase)
+
+    FORMAT:
+
+    SUMMARY:
+    <short explanation>
+
+    IMPORTANT QUOTES:
+    - "<exact sentence 1>"
+    - "<exact sentence 2>"
     """
 
     # Task 2: Extraction
@@ -229,6 +254,8 @@ def main():
 
     print("Running CrewAI pipeline...")
     result = lecture_crew.kickoff() #Run AI Agents on the tasks we defined. This will execute the summarization and extraction sequentially, and return the results.
+    summary_output = lecture_crew.tasks[0].output.raw
+    keypoints_output = lecture_crew.tasks[1].output.raw
     print("Processing completed!\n")
 
     # -------------------------------
@@ -239,21 +266,42 @@ def main():
     key_points_clean = "No key points extracted"
     assignments = "No assignments found"
 
-    if result:
-        if "SUMMARY:" in result:
-            summary = result.split("SUMMARY:")[1].split("KEY POINTS:")[0].strip()
+    # if result:
+    #     if "SUMMARY:" in result:
+    #         summary = result.split("SUMMARY:")[1].split("KEY POINTS:")[0].strip()
 
-        if "KEY POINTS:" in result:
-            # First extract everything after KEY POINTS
-            key_section = result.split("KEY POINTS:")[1]
+    #     if "KEY POINTS:" in result:
+    #         # First extract everything after KEY POINTS
+    #         key_section = result.split("KEY POINTS:")[1]
 
-            # If assignments exist → split further
-            if "ASSIGNMENTS:" in key_section:
-                key_points_clean = key_section.split("ASSIGNMENTS:")[0].strip()
-                assignments = key_section.split("ASSIGNMENTS:")[1].strip()
-            else:
-                key_points_clean = key_section.strip() #strip() removes extra whitespace from the beginning and end of the string
+    #         # If assignments exist → split further
+    #         if "ASSIGNMENTS:" in key_section:
+    #             key_points_clean = key_section.split("ASSIGNMENTS:")[0].strip()
+    #             assignments = key_section.split("ASSIGNMENTS:")[1].strip()
+    #         else:
+    #             key_points_clean = key_section.strip() #strip() removes extra whitespace from the beginning and end of the string
 
+    summary = summary_output if summary_output else "No summary generated"
+    key_points_clean = keypoints_output if keypoints_output else "No key points extracted"
+    assignments = "No assignments found"
+
+    # --- Clean SUMMARY ---
+    if "SUMMARY:" in summary:
+        summary = summary.split("SUMMARY:")[1].strip()
+
+    # Remove IMPORTANT QUOTES from summary (optional)
+    if "IMPORTANT QUOTES:" in summary:
+        summary = summary.split("IMPORTANT QUOTES:")[0].strip()
+
+    # --- Clean KEY POINTS ---
+    if "KEY POINTS:" in key_points_clean:
+        key_points_clean = key_points_clean.split("KEY POINTS:")[1].strip()
+
+    # --- Extract ASSIGNMENTS ---
+    if "ASSIGNMENTS:" in key_points_clean:
+        parts = key_points_clean.split("ASSIGNMENTS:")
+        key_points_clean = parts[0].strip()
+        assignments = parts[1].strip()
     # -------------------------------
     # Store in Notion
     # -------------------------------
